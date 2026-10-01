@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,7 +66,13 @@ func ExtractTaxDocumentArchive(encryptionKeyring Keyring, contents []byte, extra
 	importDirectory := filepath.Join(extractionDirectory, identifier.String())
 	plannedEntries := make([]plannedArchiveEntry, 0, len(archiveReader.File))
 	for _, entry := range archiveReader.File {
+		if filepath.IsAbs(entry.Name) || strings.Contains(entry.Name, "\\") || entry.Mode()&os.ModeSymlink != 0 {
+			return ExtractedTaxDocumentArchive{}, &ArchiveImportError{Message: "Choose a valid ZIP archive.", StatusCode: 400}
+		}
 		entryDestination := filepath.Join(importDirectory, entry.Name)
+		if !isInsideDirectory(importDirectory, entryDestination) {
+			return ExtractedTaxDocumentArchive{}, &ArchiveImportError{Message: "Choose a valid ZIP archive.", StatusCode: 400}
+		}
 		if isIgnoredArchiveEntry(entry.Name) {
 			continue
 		}
@@ -79,21 +84,21 @@ func ExtractTaxDocumentArchive(encryptionKeyring Keyring, contents []byte, extra
 		if err != nil {
 			return ExtractedTaxDocumentArchive{}, &ArchiveImportError{Message: "Choose a valid ZIP archive.", StatusCode: 400}
 		}
-		contentType := mime.TypeByExtension(filepath.Ext(entry.Name))
-		if contentType == "" {
-			contentType = "application/octet-stream"
+		mimeType, extension, valid := detectDocumentType(entryContents)
+		if !valid {
+			return ExtractedTaxDocumentArchive{}, &ArchiveImportError{Message: "Choose a valid ZIP archive.", StatusCode: 400}
 		}
 		storedContents, encrypted, err := encryptDocument(entryContents, encryptionKeyring)
 		if err != nil {
 			return ExtractedTaxDocumentArchive{}, err
 		}
-		storagePath := entryDestination
+		storagePath := entryDestination + extension
 		if encrypted {
 			storagePath += ".enc"
 		}
 		plannedEntries = append(plannedEntries, plannedArchiveEntry{
 			destination: storagePath, contents: storedContents, encrypted: encrypted,
-			document: ExtractedTaxDocument{OriginalName: entry.Name, StoragePath: storagePath, ContentType: contentType},
+			document: ExtractedTaxDocument{OriginalName: entry.Name, StoragePath: storagePath, ContentType: mimeType},
 		})
 	}
 
@@ -166,6 +171,23 @@ func DiscardExtractedTaxDocumentArchive(archive ExtractedTaxDocumentArchive) err
 		return fmt.Errorf("remove archive import directory: %w", err)
 	}
 	return nil
+}
+
+func isInsideDirectory(trustedDir, candidate string) bool {
+	relativePath, err := filepath.Rel(trustedDir, candidate)
+	if err != nil {
+		return false
+	}
+	if relativePath == "." || relativePath == ".." {
+		return false
+	}
+	if strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+		return false
+	}
+	if filepath.IsAbs(relativePath) {
+		return false
+	}
+	return true
 }
 
 func readArchiveEntry(entry *zip.File) ([]byte, error) {

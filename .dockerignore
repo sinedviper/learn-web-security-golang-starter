@@ -1,0 +1,9 @@
+.env*
+.git/
+tmp/
+bearly-secure.log
+
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+data/bulk-tax-documents/

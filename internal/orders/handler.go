@@ -60,6 +60,7 @@ func (handler *Handler) List(responseWriter http.ResponseWriter, request *http.R
 func (handler *Handler) Detail(responseWriter http.ResponseWriter, request *http.Request) {
 	current, ok := handler.requireAuth(responseWriter, request)
 	if !ok {
+		handler.errorPage(responseWriter, http.StatusUnauthorized, "Unauthorized", "You must be logged in to view this page.")
 		return
 	}
 	orderID, valid := httpx.ParseSafeInteger(request.PathValue("id"))
@@ -76,6 +77,11 @@ func (handler *Handler) Detail(responseWriter http.ResponseWriter, request *http
 		handler.orderNotFound(responseWriter)
 		return
 	}
+	if current.User.ID != order.UserID {
+		handler.orderNotFound(responseWriter)
+		return
+	}
+
 	orderItems, err := handler.orderStore.ListItems(request.Context(), order.ID)
 	if err != nil {
 		handler.internalError(responseWriter, request, err)

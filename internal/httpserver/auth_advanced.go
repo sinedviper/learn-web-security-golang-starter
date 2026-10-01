@@ -139,6 +139,11 @@ func (handler *authHandler) TOTPLogin(responseWriter http.ResponseWriter, reques
 			"failureReason": "totp code mismatch",
 			"returnTo":      challenge.ReturnTo,
 		})
+		handler.failedLoginAlert.Record(
+			httpx.RequestID(request.Context()),
+			clientIPKeyWithTrustedProxies(handler.trustedProxyHops)(request),
+			user.ID,
+		)
 		if exhausted {
 			clearTOTPLoginChallengeCookie(responseWriter)
 			http.Redirect(responseWriter, request, verificationRestartLoginPath(challenge.ReturnTo), http.StatusFound)
@@ -225,6 +230,17 @@ func (handler *authHandler) RecoverMFA(responseWriter http.ResponseWriter, reque
 		}
 		return
 	}
+	if passwords.NeedsRehash(user.PasswordHash) {
+		newHash, err := passwords.Hash(password)
+		if err != nil {
+			handler.internalError(responseWriter, request, err)
+			return
+		}
+		if err := handler.accounts.UpdatePasswordHash(request.Context(), user.ID, newHash); err != nil {
+			handler.internalError(responseWriter, request, err)
+			return
+		}
+	}
 	consumed, err := handler.mfa.ConsumeBackupCode(request.Context(), user.ID, backupCode)
 	if err != nil {
 		handler.internalError(responseWriter, request, err)
@@ -291,7 +307,12 @@ func (handler *authHandler) RequestPasswordReset(responseWriter http.ResponseWri
 			"success":       false,
 			"failureReason": "email not found",
 		})
-		if err := handler.renderPasswordResetRequest(responseWriter, http.StatusNotFound, false, "No account exists for that email.", ""); err != nil {
+		handler.passwordResetAlert.Record(
+			httpx.RequestID(request.Context()),
+			clientIPKeyWithTrustedProxies(handler.trustedProxyHops)(request),
+			nullableUserID(user, found),
+		)
+		if err := handler.renderPasswordResetRequest(responseWriter, http.StatusOK, true, "", ""); err != nil {
 			handler.internalError(responseWriter, request, err)
 		}
 		return
@@ -313,7 +334,12 @@ func (handler *authHandler) RequestPasswordReset(responseWriter http.ResponseWri
 		"resetToken": resetToken.Value,
 		"resetLink":  resetLink,
 	})
-	if err := handler.renderPasswordResetRequest(responseWriter, http.StatusOK, true, "", "/password-reset/"+resetToken.Value); err != nil {
+	handler.passwordResetAlert.Record(
+		httpx.RequestID(request.Context()),
+		clientIPKeyWithTrustedProxies(handler.trustedProxyHops)(request),
+		user.ID,
+	)
+	if err := handler.renderPasswordResetRequest(responseWriter, http.StatusOK, true, "", ""); err != nil {
 		handler.internalError(responseWriter, request, err)
 	}
 }

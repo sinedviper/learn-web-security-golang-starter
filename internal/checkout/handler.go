@@ -1,6 +1,7 @@
 package checkout
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -80,7 +81,8 @@ func (handler *Handler) Page(responseWriter http.ResponseWriter, request *http.R
 
 func (handler *Handler) Submit(responseWriter http.ResponseWriter, request *http.Request) {
 	current, ok := handler.requireAuth(responseWriter, request)
-	if !ok {
+	if !ok || !handler.verifyCSRF(responseWriter, request, current.Session.CSRFToken) {
+		handler.errorPage(responseWriter, http.StatusForbidden, "Forbidden", "You don't have permission to view this page.")
 		return
 	}
 	items, err := handler.cartStore.ListItems(request.Context(), current.User.ID)
@@ -96,7 +98,7 @@ func (handler *Handler) Submit(responseWriter http.ResponseWriter, request *http
 		handler.renderCheckoutError(responseWriter, request, http.StatusConflict, current, items, unavailableItem.Name+" is no longer available in the requested quantity. Update your cart before checking out.")
 		return
 	}
-	shippingDetails, discountCents, valid := handler.parseCheckoutForm(responseWriter, request)
+	shippingDetails, valid := handler.parseCheckoutForm(responseWriter, request)
 	if !valid {
 		return
 	}
@@ -104,7 +106,7 @@ func (handler *Handler) Submit(responseWriter http.ResponseWriter, request *http
 		handler.renderCheckoutError(responseWriter, request, http.StatusBadRequest, current, items, "All shipping fields are required")
 		return
 	}
-	_, err = acorn.Reserve(request.Context(), acorn.Request{
+	_, err = acorn.ReserveWithTimeout(request.Context(), acorn.Request{
 		Name:       shippingDetails.Name,
 		Address:    shippingDetails.Address,
 		City:       shippingDetails.City,
@@ -112,6 +114,11 @@ func (handler *Handler) Submit(responseWriter http.ResponseWriter, request *http
 		PostalCode: shippingDetails.PostalCode,
 	}, handler.fulfillmentDelay)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			responseWriter.Header().Set("Retry-After", "1")
+			handler.renderCheckoutError(responseWriter, request, http.StatusServiceUnavailable, current, items, "Shipping is temporarily unavailable. Try again shortly.")
+			return
+		}
 		handler.internalError(responseWriter, request, err)
 		return
 	}
@@ -128,7 +135,7 @@ func (handler *Handler) Submit(responseWriter http.ResponseWriter, request *http
 		handler.renderCheckoutError(responseWriter, request, http.StatusConflict, current, items, unavailableItem.Name+" is no longer available in the requested quantity. Update your cart before checking out.")
 		return
 	}
-	order, err := handler.orderStore.CreateFromCart(request.Context(), current.User.ID, items, discountCents, shippingDetails, checkoutAdminNotes, handler.keyring)
+	order, err := handler.orderStore.CreateFromCart(request.Context(), current.User.ID, items, shippingDetails, checkoutAdminNotes, handler.keyring)
 	if errors.Is(err, orders.ErrInsufficientInventory) {
 		currentItems, listErr := handler.cartStore.ListItems(request.Context(), current.User.ID)
 		if listErr != nil {
@@ -155,6 +162,23 @@ func (handler *Handler) Submit(responseWriter http.ResponseWriter, request *http
 		"adminNotes":         checkoutAdminNotes,
 	})
 	http.Redirect(responseWriter, request, pawpal.CreateCheckoutURL(order.ID), http.StatusFound)
+}
+
+func (handler *Handler) verifyCSRF(responseWriter http.ResponseWriter, request *http.Request, expectedToken string) bool {
+	actualToken, err := httpx.FormValue(request, "csrfToken")
+	if err != nil {
+		handler.invalidRequest(responseWriter)
+		return false
+	}
+	if sessions.CSRFTokensMatch(expectedToken, actualToken) {
+		return true
+	}
+	handler.errorPage(responseWriter, http.StatusForbidden, "Forbidden", "Your request could not be verified.")
+	return false
+}
+
+func (handler *Handler) invalidRequest(responseWriter http.ResponseWriter) {
+	handler.errorPage(responseWriter, http.StatusBadRequest, "Invalid Request", "The submitted form is invalid.")
 }
 
 func (handler *Handler) Processing(responseWriter http.ResponseWriter, request *http.Request) {
@@ -187,14 +211,14 @@ func (handler *Handler) Processing(responseWriter http.ResponseWriter, request *
 	}
 }
 
-func (handler *Handler) parseCheckoutForm(responseWriter http.ResponseWriter, request *http.Request) (orders.ShippingDetails, int64, bool) {
+func (handler *Handler) parseCheckoutForm(responseWriter http.ResponseWriter, request *http.Request) (orders.ShippingDetails, bool) {
 	fieldNames := []string{"shippingName", "shippingAddress", "shippingCity", "shippingRegion", "shippingPostalCode"}
 	fieldValues := make(map[string]string, len(fieldNames))
 	for _, fieldName := range fieldNames {
 		fieldValue, err := httpx.FormValue(request, fieldName)
 		if err != nil {
 			handler.errorPage(responseWriter, http.StatusBadRequest, "Invalid Request", "The submitted form is invalid.")
-			return orders.ShippingDetails{}, 0, false
+			return orders.ShippingDetails{}, false
 		}
 		fieldValues[fieldName] = fieldValue
 	}
@@ -204,7 +228,7 @@ func (handler *Handler) parseCheckoutForm(responseWriter http.ResponseWriter, re
 		City:       strings.TrimSpace(fieldValues["shippingCity"]),
 		Region:     strings.TrimSpace(fieldValues["shippingRegion"]),
 		PostalCode: strings.TrimSpace(fieldValues["shippingPostalCode"]),
-	}, parseDiscount(request.PostForm.Get("discountCents")), true
+	}, true
 }
 
 func (handler *Handler) renderPage(responseWriter http.ResponseWriter, statusCode int, current accounts.CurrentSession, items []cart.Item, errorMessage string) error {

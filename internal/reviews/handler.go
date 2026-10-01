@@ -3,6 +3,8 @@ package reviews
 import (
 	"net/http"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/bootdotdev/learn-web-security/internal/accounts"
 	"github.com/bootdotdev/learn-web-security/internal/auth/sessions"
@@ -95,12 +97,20 @@ func (handler *Handler) List(responseWriter http.ResponseWriter, request *http.R
 func (handler *Handler) Edit(responseWriter http.ResponseWriter, request *http.Request) {
 	current, ok := handler.requireAuth(responseWriter, request)
 	if !ok {
+		handler.errorPage(responseWriter, http.StatusForbidden, "Forbidden", "You don't have permission to view this page.")
 		return
 	}
 	review, found := handler.requireReview(responseWriter, request)
 	if !found {
+		handler.errorPage(responseWriter, http.StatusNotFound, "Not Found", "Review Not Found")
 		return
 	}
+
+	if review.UserID != current.User.ID {
+		handler.errorPage(responseWriter, http.StatusNotFound, "Not Found", "Review Not Found")
+		return
+	}
+
 	if err := handler.renderForm(responseWriter, http.StatusOK, current, review, ""); err != nil {
 		handler.internalError(responseWriter, request, err)
 	}
@@ -109,10 +119,16 @@ func (handler *Handler) Edit(responseWriter http.ResponseWriter, request *http.R
 func (handler *Handler) Update(responseWriter http.ResponseWriter, request *http.Request) {
 	current, ok := handler.requireAuth(responseWriter, request)
 	if !ok || !handler.verifyCSRF(responseWriter, request, current.Session.CSRFToken) {
+		handler.errorPage(responseWriter, http.StatusForbidden, "Forbidden", "You don't have permission to view this page.")
 		return
 	}
 	review, found := handler.requireReview(responseWriter, request)
 	if !found {
+		handler.errorPage(responseWriter, http.StatusNotFound, "Not Found", "Review Not Found")
+		return
+	}
+	if review.UserID != current.User.ID {
+		handler.errorPage(responseWriter, http.StatusNotFound, "Not Found", "Review Not Found")
 		return
 	}
 	ratingValue, ratingErr := httpx.FormValue(request, "rating")
@@ -145,10 +161,16 @@ func (handler *Handler) Update(responseWriter http.ResponseWriter, request *http
 func (handler *Handler) Delete(responseWriter http.ResponseWriter, request *http.Request) {
 	current, ok := handler.requireAuth(responseWriter, request)
 	if !ok || !handler.verifyCSRF(responseWriter, request, current.Session.CSRFToken) {
+		handler.errorPage(responseWriter, http.StatusForbidden, "Forbidden", "You don't have permission to view this page.")
 		return
 	}
 	review, found := handler.requireReview(responseWriter, request)
 	if !found {
+		handler.errorPage(responseWriter, http.StatusNotFound, "Not Found", "Review Not Found")
+		return
+	}
+	if review.UserID != current.User.ID {
+		handler.errorPage(responseWriter, http.StatusNotFound, "Not Found", "Review Not Found")
 		return
 	}
 	if err := handler.store.Delete(request.Context(), review.ID); err != nil {
@@ -233,5 +255,11 @@ func parseRating(value string) (int64, bool) {
 }
 
 func parseBody(value string) (string, bool) {
-	return value, value != ""
+	trimmed := strings.TrimSpace(value)
+
+	if trimmed == "" || utf8.RuneCountInString(trimmed) > 1000 {
+		return "", false
+	}
+
+	return trimmed, value != ""
 }

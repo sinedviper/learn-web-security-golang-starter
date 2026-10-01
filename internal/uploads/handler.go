@@ -87,8 +87,9 @@ func (handler *Handler) Upload(responseWriter http.ResponseWriter, request *http
 }
 
 func (handler *Handler) Download(responseWriter http.ResponseWriter, request *http.Request) {
-	_, ok := handler.requireAuth(responseWriter, request)
+	current, ok := handler.requireAuth(responseWriter, request)
 	if !ok {
+		handler.errorPage(responseWriter, http.StatusForbidden, "Forbidden", "You don't have permission to view this page.")
 		return
 	}
 	fileID, valid := httpx.ParseSafeInteger(request.PathValue("id"))
@@ -102,6 +103,10 @@ func (handler *Handler) Download(responseWriter http.ResponseWriter, request *ht
 		return
 	}
 	if !found {
+		handler.fileNotFound(responseWriter)
+		return
+	}
+	if file.UserID != current.User.ID && current.User.Role != "support" && current.User.Role != "admin" {
 		handler.fileNotFound(responseWriter)
 		return
 	}
@@ -166,8 +171,8 @@ func (handler *Handler) readUpload(responseWriter http.ResponseWriter, request *
 		return nil, "", err
 	}
 	files := request.MultipartForm.File["document"]
-	if len(files) == 0 {
-		return nil, "", errors.New("missing document upload")
+	if len(files) != 1 {
+		return nil, "", errors.New("choose exactly one document to upload")
 	}
 	file, err := files[0].Open()
 	if err != nil {

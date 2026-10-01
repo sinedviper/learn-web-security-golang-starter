@@ -10,6 +10,7 @@ import (
 
 	"github.com/bootdotdev/learn-web-security/internal/accounts"
 	"github.com/bootdotdev/learn-web-security/internal/auth/mfa"
+	"github.com/bootdotdev/learn-web-security/internal/auth/passwords"
 	"github.com/bootdotdev/learn-web-security/internal/auth/sessions"
 	"github.com/bootdotdev/learn-web-security/internal/httpx"
 	"github.com/bootdotdev/learn-web-security/internal/logging"
@@ -63,7 +64,13 @@ func (handler *Handler) Page(responseWriter http.ResponseWriter, request *http.R
 	}
 	if err := handler.renderPage(responseWriter, http.StatusOK, current, ""); err != nil {
 		handler.internalError(responseWriter, request, err)
+		return
 	}
+	_ = handler.logger.Event("account_accessed", map[string]any{
+		"userId":    current.User.ID,
+		"email":     current.User.Email,
+		"expiresAt": formatTimestamp(current.Session.ExpiresAt),
+	})
 }
 
 func (handler *Handler) UpdateEmail(responseWriter http.ResponseWriter, request *http.Request) {
@@ -72,8 +79,13 @@ func (handler *Handler) UpdateEmail(responseWriter http.ResponseWriter, request 
 		return
 	}
 	email, emailErr := httpx.FormValue(request, "email")
-	if emailErr != nil {
+	currentPassword, currentPasswordErr := httpx.FormValue(request, "currentPassword")
+	if emailErr != nil || currentPasswordErr != nil {
 		handler.errorPage(responseWriter, http.StatusBadRequest, "Invalid Request", "The submitted form is invalid.")
+		return
+	}
+	if currentPassword == "" || !passwords.Verify(currentPassword, current.User.PasswordHash) {
+		handler.errorPage(responseWriter, http.StatusForbidden, "Reauthentication Required", "Please confirm your current password to continue.")
 		return
 	}
 	email = accounts.NormalizeEmail(email)

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 const (
@@ -36,6 +38,8 @@ type Config struct {
 	MaxPublicProductResults    int
 	ActiveEncryptionKeyVersion string
 	EncryptionKeys             map[string][32]byte
+	DownloadSigningKey         [32]byte
+	TrustedProxyHops           int
 }
 
 type AttackerLabConfig struct {
@@ -43,11 +47,35 @@ type AttackerLabConfig struct {
 }
 
 func Load(workingDirectory string) (Config, error) {
-	return Parse(processEnvironment(), workingDirectory)
+	environment, err := loadDotEnvOverlay(workingDirectory)
+	if err != nil {
+		return Config{}, err
+	}
+	return Parse(environment, workingDirectory)
 }
 
 func LoadAttackerLab(workingDirectory string) (AttackerLabConfig, error) {
-	return ParseAttackerLab(processEnvironment())
+	environment, err := loadDotEnvOverlay(workingDirectory)
+	if err != nil {
+		return AttackerLabConfig{}, err
+	}
+	return ParseAttackerLab(environment)
+}
+
+func loadDotEnvOverlay(workingDirectory string) (map[string]string, error) {
+	envPath := filepath.Join(workingDirectory, ".env")
+	fileValues, err := godotenv.Read(envPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fileValues = map[string]string{}
+		} else {
+			return nil, fmt.Errorf("read .env: %w", err)
+		}
+	}
+	for name, value := range processEnvironment() {
+		fileValues[name] = value // реальные os.Environ() всегда побеждают .env
+	}
+	return fileValues, nil
 }
 
 func Parse(environment map[string]string, workingDirectory string) (Config, error) {
@@ -68,7 +96,7 @@ func Parse(environment map[string]string, workingDirectory string) (Config, erro
 		return Config{}, err
 	}
 
-	activeEncryptionKeyVersion, encryptionKeys, err := parseOptionalEncryptionKeys(environment)
+	activeEncryptionKeyVersion, encryptionKeys, err := parseEncryptionKeys(environment)
 	if err != nil {
 		return Config{}, err
 	}
@@ -78,8 +106,30 @@ func Parse(environment map[string]string, workingDirectory string) (Config, erro
 		databasePath = filepath.Join(workingDirectory, "data", defaultDatabaseFilename)
 	}
 
+	pawPalAPIKey, err := requireEnvironmentVariable(environment, "PAWPAL_API_KEY")
+	if err != nil {
+		return Config{}, err
+	}
+
+	downloadSigningKeyReq, err := requireEnvironmentVariable(environment, "DOWNLOAD_SIGNING_KEY")
+	if err != nil {
+		return Config{}, err
+	}
+
+	downloadSigningKey, err := parseEncryptionKey(
+		downloadSigningKeyReq, "DOWNLOAD_SIGNING_KEY",
+	)
+	if err != nil {
+		return Config{}, err
+	}
+
+	trustedProxyHops, err := parseNonNegativeInteger(valueOrDefault(environment, "TRUST_PROXY_HOPS", "0"), "TRUST_PROXY_HOPS")
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
-		PawPalAPIKey:               "bs_test_pawpal_starter_key",
+		PawPalAPIKey:               pawPalAPIKey,
 		AppOrigin:                  appOrigin,
 		Port:                       port,
 		DatabasePath:               databasePath,
@@ -89,6 +139,8 @@ func Parse(environment map[string]string, workingDirectory string) (Config, erro
 		MaxPublicProductResults:    MaxPublicProductResults,
 		ActiveEncryptionKeyVersion: activeEncryptionKeyVersion,
 		EncryptionKeys:             encryptionKeys,
+		DownloadSigningKey:         downloadSigningKey,
+		TrustedProxyHops:           trustedProxyHops,
 	}, nil
 }
 
@@ -219,4 +271,12 @@ func normalizeEncryptionVersion(version string) (string, error) {
 		}
 	}
 	return normalized, nil
+}
+
+func requireEnvironmentVariable(environment map[string]string, name string) (string, error) {
+	value := environment[name]
+	if value == "" {
+		return "", fmt.Errorf("missing required environment variable: %s", name)
+	}
+	return value, nil
 }

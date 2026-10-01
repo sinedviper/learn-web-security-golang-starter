@@ -70,6 +70,15 @@
       maxlength="128"
       required
   /></label>
+  <label hidden>
+    Leave this field blank
+    <input
+      name="companyWebsite"
+      type="text"
+      tabindex="-1"
+      autocomplete="off"
+    />
+  </label>
   <button type="submit">Create account</button>
 </form>
 <p class="auth-link">Already have an account? <a href="/login">Log in</a>.</p>
@@ -165,7 +174,8 @@
   <p class="error">{{.Error}}</p>
   {{end}}{{if .ShowConfirmation}}
   <p class="confirmation">
-    Starter reset link: <a href="{{.ResetLink}}">{{.ResetLink}}</a>
+    If an account exists for that email, Bear Mail will send a reset link
+    shortly.
   </p>
   {{end -}}
 </div>
